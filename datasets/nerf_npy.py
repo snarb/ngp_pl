@@ -11,142 +11,66 @@ from .colmap_utils import \
 
 from .base import BaseDataset
 
-def _minify(basedir, factors=[], resolutions=[]):
-    needtoload = False
-    for r in factors:
-        imgdir = os.path.join(basedir, 'images_{}'.format(r))
-        if not os.path.exists(imgdir):
-            needtoload = True
-    for r in resolutions:
-        imgdir = os.path.join(basedir, 'images_{}x{}'.format(r[1], r[0]))
-        if not os.path.exists(imgdir):
-            needtoload = True
-    if not needtoload:
-        return
 
-def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
-    import imageio
-    poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
-    poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1, 2, 0])
-    bds = poses_arr[:, -2:].transpose([1, 0])
-
-    img0 = [os.path.join(basedir, 'images', f) for f in sorted(os.listdir(os.path.join(basedir, 'images'))) \
-            if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')][0]
-    sh = imageio.imread(img0).shape
-
-    sfx = ''
-
-    if factor is not None:
-        sfx = '_{}'.format(factor)
-        _minify(basedir, factors=[factor])
-        factor = factor
-    elif height is not None:
-        factor = sh[0] / float(height)
-        width = int(sh[1] / factor)
-        _minify(basedir, resolutions=[[height, width]])
-        sfx = '_{}x{}'.format(width, height)
-    elif width is not None:
-        factor = sh[1] / float(width)
-        height = int(sh[0] / factor)
-        _minify(basedir, resolutions=[[height, width]])
-        sfx = '_{}x{}'.format(width, height)
-    else:
-        factor = 1
-
-    imgdir = os.path.join(basedir, 'images' + sfx)
-    if not os.path.exists(imgdir):
-        print(imgdir, 'does not exist, returning')
-        return
-
-    imgfiles = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir)) if
-                f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
-    if poses.shape[-1] != len(imgfiles):
-        print('Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]))
-        return
-
-    sh = imageio.imread(imgfiles[0]).shape
-    poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
-    poses[2, 4, :] = poses[2, 4, :] * 1. / factor
-
-    if not load_imgs:
-        return poses, bds
-
-    def imread(f):
-        if f.endswith('png'):
-            return imageio.imread(f, ignoregamma=True)
-        else:
-            return imageio.imread(f)
-
-    imgs = [imread(f)[..., :3] / 255. for f in imgfiles]
-    imgs = np.stack(imgs, -1)
-
-    print('Loaded image data', imgs.shape, poses[:, -1, 0])
-    return poses, bds, imgs
-
-class ColmapDataset(BaseDataset):
+class NerfMpyDataset(BaseDataset):
     def __init__(self, root_dir, split='train', downsample=1.0, **kwargs):
         super().__init__(root_dir, split, downsample)
+        poses_arr = np.load(os.path.join(root_dir, 'poses_bounds.npy'))
+        poses = poses_arr[:, :-2].reshape([-1, 3, 5])#.transpose([1, 2, 0])
+        intr = poses[..., -1]
+        bds = poses_arr[:, -2:].transpose([1, 0])
 
-        self.read_intrinsics()
-        from nerf_load_llff import load_llff_data
-        images, poses, bds, render_poses, i_test = load_llff_data(root_dir, factor = None, bd_factor = 1.)
-        poses, bds = _load_data(root_dir, load_imgs = False) # Remove
+        self.read_intrinsics(intr)
+        #from nerf_load_llff import load_llff_data
+        #images, poses, bds, render_poses, i_test = load_llff_data(root_dir, factor = None, bd_factor = 1.)
+        #poses, bds = _load_data(root_dir, load_imgs = False) # Remove
         if kwargs.get('read_meta', True):
-            self.read_meta(split, **kwargs)
+            self.read_meta(split, poses[..., :-1], bds, **kwargs)
 
-    def read_intrinsics(self):
+    def read_intrinsics(self, intr):
         # Step 1: read and scale intrinsics (same for all images)
-        camdata = read_cameras_binary(os.path.join(self.root_dir, 'sparse/0/cameras.bin'))
-        h = int(camdata[1].height*self.downsample)
-        w = int(camdata[1].width*self.downsample)
+        #camdata = read_cameras_binary(os.path.join(self.root_dir, 'sparse/0/cameras.bin'))
+        h = int(intr[0, 0] * self.downsample)
+        w = int(intr[0, 1] * self.downsample)
         self.img_wh = (w, h)
 
-        if camdata[1].model == 'SIMPLE_RADIAL':
-            fx = fy = camdata[1].params[0]*self.downsample
-            cx = camdata[1].params[1]*self.downsample
-            cy = camdata[1].params[2]*self.downsample
-        elif camdata[1].model in ['PINHOLE', 'OPENCV']:
-            fx = camdata[1].params[0]*self.downsample
-            fy = camdata[1].params[1]*self.downsample
-            cx = camdata[1].params[2]*self.downsample
-            cy = camdata[1].params[3]*self.downsample
-        else:
-            raise ValueError(f"Please parse the intrinsics for camera model {camdata[1].model}!")
-        self.K = torch.FloatTensor([[fx, 0, cx],
-                                    [0, fy, cy],
+
+        self.K = torch.FloatTensor([[intr[0, 2] , 0, intr[0, 1] / 2],
+                                    [0, intr[0, 2] , intr[0, 0] / 2],
                                     [0,  0,  1]])
         self.directions = get_ray_directions(h, w, self.K)
 
-    def read_meta(self, split, **kwargs):
+    def read_meta(self, split, poses_inp, bd_inp, **kwargs):
         # Step 2: correct poses
         # read extrinsics (of successfully reconstructed images)
         imdata = read_images_binary(os.path.join(self.root_dir, 'sparse/0/images.bin'))
         img_names = [imdata[k].name for k in imdata]
         perm = np.argsort(img_names)
-        if '360_v2' in self.root_dir and self.downsample<1: # mipnerf360 data
-            folder = f'images_{int(1/self.downsample)}'
-        else:
-            folder = 'images'
+        folder = 'images'
         # read successfully reconstructed images and ignore others
         img_paths = [os.path.join(self.root_dir, folder, name)
                      for name in sorted(img_names)]
-        w2c_mats = []
-        bottom = np.array([[0, 0, 0, 1.]])
-        for k in imdata:
-            im = imdata[k]
-            R = im.qvec2rotmat(); t = im.tvec.reshape(3, 1)
-            w2c_mats += [np.concatenate([np.concatenate([R, t], 1), bottom], 0)]
-        w2c_mats = np.stack(w2c_mats, 0)
-        poses = np.linalg.inv(w2c_mats)[perm, :3] # (N_images, 3, 4) cam2world matrices
+        # w2c_mats = []
+        # bottom = np.array([[0, 0, 0, 1.]])
+        # for k in imdata:
+        #     im = imdata[k]
+        #     R = im.qvec2rotmat(); t = im.tvec.reshape(3, 1)
+        #     w2c_mats += [np.concatenate([np.concatenate([R, t], 1), bottom], 0)]
+        #w2c_mats = np.stack(w2c_mats, 0)
+        #poses = np.linalg.inv(w2c_mats)[perm, :3] # (N_images, 3, 4) cam2world matrices
+        #poses = np.concatenate(poses_inp[0, :, 1], poses_inp[0, :, 0], -poses_inp[0, :, 2], poses_inp[0, :, 3])
+        #pts3d = read_points3d_binary(os.path.join(self.root_dir, 'sparse/0/points3D.bin'))
+        #pts3d = np.array([pts3d[k].xyz for k in pts3d]) # (N, 3)
+        poses = poses_inp.copy()
+        poses[..., 0] = poses_inp[..., 1]
+        poses[...,  1] = poses_inp[..., 0]
+        poses[...,  2] = -poses_inp[..., 2]
 
-        pts3d = read_points3d_binary(os.path.join(self.root_dir, 'sparse/0/points3D.bin'))
-        pts3d = np.array([pts3d[k].xyz for k in pts3d]) # (N, 3)
-
-        self.poses, self.pts3d = center_poses(poses, pts3d)
+        self.poses = center_poses(poses, None)
 
         scale = np.linalg.norm(self.poses[..., 3], axis=-1).min()
         self.poses[..., 3] /= scale
-        self.pts3d /= scale
+        #self.pts3d /= scale
 
         self.rays = []
         if split == 'test_traj': # use precomputed test poses

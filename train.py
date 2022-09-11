@@ -7,6 +7,10 @@ import imageio
 import numpy as np
 import cv2
 from einops import rearrange
+np.set_printoptions(suppress=True,  formatter={'float_kind':'{:0.4f}'.format})
+WORKERS_CNT = 16
+WORKERS_CNT = 0
+USE_DDP = False
 
 # data
 from torch.utils.data import DataLoader
@@ -140,8 +144,8 @@ class NeRFSystem(LightningModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
-                          num_workers=16,
-                          persistent_workers=True,
+                          num_workers=WORKERS_CNT,
+                          persistent_workers=WORKERS_CNT > 0,
                           batch_size=None,
                           pin_memory=True)
 
@@ -269,7 +273,7 @@ if __name__ == '__main__':
                       accelerator='gpu',
                       devices=hparams.num_gpus,
                       strategy=DDPPlugin(find_unused_parameters=False)
-                               if hparams.num_gpus>1 else None,
+                               if hparams.num_gpus>1 and USE_DDP else None,
                       num_sanity_val_steps=-1 if hparams.val_only else 0,
                       precision=16)
 
