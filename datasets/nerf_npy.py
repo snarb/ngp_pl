@@ -3,6 +3,8 @@ import numpy as np
 import os
 import glob
 from tqdm import tqdm
+import pathlib
+import cv2
 
 from .ray_utils import *
 from .color_utils import read_image
@@ -19,11 +21,9 @@ class NerfMpyDataset(BaseDataset):
         poses = poses_arr[:, :-2].reshape([-1, 3, 5])#.transpose([1, 2, 0])
         intr = poses[..., -1]
         bds = poses_arr[:, -2:].transpose([1, 0])
+        self.downsample = 0.5
 
         self.read_intrinsics(intr)
-        #from nerf_load_llff import load_llff_data
-        #images, poses, bds, render_poses, i_test = load_llff_data(root_dir, factor = None, bd_factor = 1.)
-        #poses, bds = _load_data(root_dir, load_imgs = False) # Remove
         if kwargs.get('read_meta', True):
             self.read_meta(split, poses[..., :-1], bds, **kwargs)
 
@@ -34,33 +34,22 @@ class NerfMpyDataset(BaseDataset):
         w = int(intr[0, 1] * self.downsample)
         self.img_wh = (w, h)
 
-
-        self.K = torch.FloatTensor([[intr[0, 2] , 0, intr[0, 1] / 2],
-                                    [0, intr[0, 2] , intr[0, 0] / 2],
+        focal_length = intr[0, 2] * self.downsample
+        self.K = torch.FloatTensor([[focal_length, 0, intr[0, 1] / 2],
+                                    [0, focal_length, intr[0, 0] / 2],
                                     [0,  0,  1]])
         self.directions = get_ray_directions(h, w, self.K)
 
     def read_meta(self, split, poses_inp, bd_inp, **kwargs):
-        # Step 2: correct poses
-        # read extrinsics (of successfully reconstructed images)
-        imdata = read_images_binary(os.path.join(self.root_dir, 'sparse/0/images.bin'))
-        img_names = [imdata[k].name for k in imdata]
-        perm = np.argsort(img_names)
-        folder = 'images'
-        # read successfully reconstructed images and ignore others
-        img_paths = [os.path.join(self.root_dir, folder, name)
-                     for name in sorted(img_names)]
-        # w2c_mats = []
-        # bottom = np.array([[0, 0, 0, 1.]])
-        # for k in imdata:
-        #     im = imdata[k]
-        #     R = im.qvec2rotmat(); t = im.tvec.reshape(3, 1)
-        #     w2c_mats += [np.concatenate([np.concatenate([R, t], 1), bottom], 0)]
-        #w2c_mats = np.stack(w2c_mats, 0)
-        #poses = np.linalg.inv(w2c_mats)[perm, :3] # (N_images, 3, 4) cam2world matrices
-        #poses = np.concatenate(poses_inp[0, :, 1], poses_inp[0, :, 0], -poses_inp[0, :, 2], poses_inp[0, :, 3])
-        #pts3d = read_points3d_binary(os.path.join(self.root_dir, 'sparse/0/points3D.bin'))
-        #pts3d = np.array([pts3d[k].xyz for k in pts3d]) # (N, 3)
+        img_paths = sorted(list(pathlib.Path(self.root_dir).glob('*.mp4')))
+        assert poses_inp.shape[0] == len(img_paths)
+        #imdata = read_images_binary(os.path.join(self.root_dir, 'sparse/0/images.bin'))
+        #img_names = [imdata[k].name for k in imdata]
+        #perm = np.argsort(img_names)
+        # folder = 'images'
+        # # read successfully reconstructed images and ignore others
+        # img_paths = [os.path.join(self.root_dir, folder, name)
+        #              for name in sorted(img_names)]
         poses = poses_inp.copy()
         poses[..., 0] = poses_inp[..., 1]
         poses[...,  1] = poses_inp[..., 0]
@@ -78,78 +67,26 @@ class NerfMpyDataset(BaseDataset):
             self.poses = torch.FloatTensor(self.poses)
             return
 
-        if 'HDR-NeRF' in self.root_dir: # HDR-NeRF data
-            if 'syndata' in self.root_dir: # synthetic
-                # first 17 are test, last 18 are train
-                self.unit_exposure_rgb = 0.73
-                if split=='train':
-                    img_paths = sorted(glob.glob(os.path.join(self.root_dir,
-                                                            f'train/*[024].png')))
-                    self.poses = np.repeat(self.poses[-18:], 3, 0)
-                elif split=='test':
-                    img_paths = sorted(glob.glob(os.path.join(self.root_dir,
-                                                            f'test/*[13].png')))
-                    self.poses = np.repeat(self.poses[:17], 2, 0)
-                else:
-                    raise ValueError(f"split {split} is invalid for HDR-NeRF!")
-            else: # real
-                self.unit_exposure_rgb = 0.5
-                # even numbers are train, odd numbers are test
-                if split=='train':
-                    img_paths = sorted(glob.glob(os.path.join(self.root_dir,
-                                                    f'input_images/*0.jpg')))[::2]
-                    img_paths+= sorted(glob.glob(os.path.join(self.root_dir,
-                                                    f'input_images/*2.jpg')))[::2]
-                    img_paths+= sorted(glob.glob(os.path.join(self.root_dir,
-                                                    f'input_images/*4.jpg')))[::2]
-                    self.poses = np.tile(self.poses[::2], (3, 1, 1))
-                elif split=='test':
-                    img_paths = sorted(glob.glob(os.path.join(self.root_dir,
-                                                    f'input_images/*1.jpg')))[1::2]
-                    img_paths+= sorted(glob.glob(os.path.join(self.root_dir,
-                                                    f'input_images/*3.jpg')))[1::2]
-                    self.poses = np.tile(self.poses[1::2], (2, 1, 1))
-                else:
-                    raise ValueError(f"split {split} is invalid for HDR-NeRF!")
-        else:
-            # use every 8th image as test set
-            if split=='train':
-                img_paths = [x for i, x in enumerate(img_paths) if i%8!=0]
-                self.poses = np.array([x for i, x in enumerate(self.poses) if i%8!=0])
-            elif split=='test':
-                img_paths = [x for i, x in enumerate(img_paths) if i%8==0]
-                self.poses = np.array([x for i, x in enumerate(self.poses) if i%8==0])
+        # use  10th image as test set
+        if split == 'train':
+            img_paths = [x for i, x in enumerate(img_paths) if i != 0]
+            self.poses = np.array([x for i, x in enumerate(self.poses) if i != 10])
+        elif split == 'test':
+            img_paths = [x for i, x in enumerate(img_paths) if i == 0]
+            self.poses = np.array([x for i, x in enumerate(self.poses) if i == 10])
 
         print(f'Loading {len(img_paths)} {split} images ...')
+
         for img_path in tqdm(img_paths):
             buf = [] # buffer for ray attributes: rgb, etc
-
-            img = read_image(img_path, self.img_wh, blend_a=False)
-            img = torch.FloatTensor(img)
-            buf += [img]
-
-            if 'HDR-NeRF' in self.root_dir: # get exposure
-                folder = self.root_dir.split('/')
-                scene = folder[-1] if folder[-1] != '' else folder[-2]
-                if scene in ['bathroom', 'bear', 'chair', 'desk']:
-                    e_dict = {e: 1/8*4**e for e in range(5)}
-                elif scene in ['diningroom', 'dog']:
-                    e_dict = {e: 1/16*4**e for e in range(5)}
-                elif scene in ['sofa']:
-                    e_dict = {0:0.25, 1:1, 2:2, 3:4, 4:16}
-                elif scene in ['sponza']:
-                    e_dict = {0:0.5, 1:2, 2:4, 3:8, 4:32}
-                elif scene in ['box']:
-                    e_dict = {0:2/3, 1:1/3, 2:1/6, 3:0.1, 4:0.05}
-                elif scene in ['computer']:
-                    e_dict = {0:1/3, 1:1/8, 2:1/15, 3:1/30, 4:1/60}
-                elif scene in ['flower']:
-                    e_dict = {0:1/3, 1:1/6, 2:0.1, 3:0.05, 4:1/45}
-                elif scene in ['luckycat']:
-                    e_dict = {0:2, 1:1, 2:0.5, 3:0.25, 4:0.125}
-                e = int(img_path.split('.')[0][-1])
-                buf += [e_dict[e]*torch.ones_like(img[:, :1])]
-
+            cap = cv2.VideoCapture(str(img_path))
+            flag, frame = cap.read()
+            frame = frame.astype(np.float32)/255.0
+            frame = cv2.resize(frame, self.img_wh)
+            frame = rearrange(frame, 'h w c -> (h w) c')
+            #img = read_image(img_path, self.img_wh, blend_a=False)
+            frame = torch.FloatTensor(frame)
+            buf += [frame]
             self.rays += [torch.cat(buf, 1)]
 
         self.rays = torch.stack(self.rays) # (N_images, hw, ?)
