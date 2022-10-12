@@ -1,4 +1,7 @@
 import torch
+torch.manual_seed(0)
+import numpy as np
+np.random.seed(0)
 from torch import nn
 from opt import get_opts
 import os
@@ -6,12 +9,13 @@ import glob
 import imageio
 import numpy as np
 import cv2
-import torchvision
-from ngp_config import *
 from einops import rearrange
-np.set_printoptions(suppress=True,  formatter={'float_kind':'{:0.4f}'.format})
-
-
+from ngp_config import *
+from flip_loss import HDRFLIPLoss
+from torchmetrics import MeanAbsoluteError
+# --optimize_ext
+# --root_dir /home/ubuntu/repos/vid_ds/flame/ --dataset_name colmap --exp_name flame   --num_gpus 1  --num_epochs 40 --downsample 0.5 --scale 2.0 --batch_size 6000  --lr 1e-6
+#--root_dir /home/ubuntu/repos/instant-ngp-flame/ --dataset_name colmap --exp_name flame   --num_gpus 1  --num_epochs 40 --downsample 0.5 --scale 2.0 --batch_size 6000  --lr 1e-6
 # data
 from torch.utils.data import DataLoader
 from datasets import dataset_dict
@@ -29,7 +33,7 @@ from losses import NeRFLoss
 
 # metrics
 from torchmetrics import (
-    PeakSignalNoiseRatio, 
+    PeakSignalNoiseRatio,
     StructuralSimilarityIndexMeasure
 )
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -38,7 +42,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from pytorch_lightning.plugins import DDPPlugin
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import TQDMProgressBar, ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.utilities.distributed import all_gather_ddp_if_available
 
 from utils import slim_ckpt, load_ckpt
@@ -58,14 +62,21 @@ class NeRFSystem(LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
-
+        self.rgb_pred = {}
+        self.batch_ids = []
+        self.rgb_gt = {}
+        self.pix_ids = {}
+        self.flip_loss = HDRFLIPLoss()
         self.warmup_steps = 256
+        self.warmup_steps = 999999999999999999999999999999999999999999
+
         self.update_interval = 16
 
         self.loss = NeRFLoss(lambda_distortion=self.hparams.distortion_loss_w)
         self.train_psnr = PeakSignalNoiseRatio(data_range=1)
         self.val_psnr = PeakSignalNoiseRatio(data_range=1)
         self.val_ssim = StructuralSimilarityIndexMeasure(data_range=1)
+        self.l1 = MeanAbsoluteError().to(self.device)
         if self.hparams.eval_lpips:
             self.val_lpips = LearnedPerceptualImagePatchSimilarity('vgg')
             for p in self.val_lpips.net.parameters():
@@ -85,8 +96,10 @@ class NeRFSystem(LightningModule):
             directions = self.directions[batch['pix_idxs']]
         else:
             poses = batch['pose']
-            directions = self.directions[batch['pix_idxs']]
-            #directions = self.directions
+            if BATCHED_EVAL:
+                directions = self.directions[batch['pix_idxs']]
+            else:
+                directions = self.directions
 
         if self.hparams.optimize_ext:
             dR = axisangle_to_R(self.dR[batch['img_idxs']])
@@ -108,20 +121,16 @@ class NeRFSystem(LightningModule):
         dataset = dataset_dict[self.hparams.dataset_name]
         kwargs = {'root_dir': self.hparams.root_dir,
                   'downsample': self.hparams.downsample}
-        #if str(stage) != 'TrainerFn.VALIDATING':
         self.train_dataset = dataset(split=self.hparams.split, **kwargs)
         self.train_dataset.batch_size = self.hparams.batch_size
         self.train_dataset.ray_sampling_strategy = self.hparams.ray_sampling_strategy
 
         self.test_dataset = dataset(split='test', **kwargs)
-        self.register_buffer('directions', self.train_dataset.directions.to(self.device))
-        self.register_buffer('poses', self.train_dataset.poses.to(self.device))
-
 
     def configure_optimizers(self):
         # define additional parameters
-        #self.register_buffer('directions', self.train_dataset.directions.to(self.device))
-        #self.register_buffer('poses', self.train_dataset.poses.to(self.device))
+        self.register_buffer('directions', self.train_dataset.directions.to(self.device))
+        self.register_buffer('poses', self.train_dataset.poses.to(self.device))
 
         if self.hparams.optimize_ext:
             N = len(self.train_dataset.poses)
@@ -155,7 +164,6 @@ class NeRFSystem(LightningModule):
                           pin_memory=True)
 
     def val_dataloader(self):
-        #print(WORKERS_CNT)
         return DataLoader(self.test_dataset,
                           num_workers=WORKERS_CNT,
                           batch_size=None,
@@ -195,80 +203,128 @@ class NeRFSystem(LightningModule):
         return loss
 
     def on_validation_start(self):
-        #self.directions = None
-        #self.poses = None
-        #self.train_dataset = None
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         if not self.hparams.no_save_test:
             self.val_dir = f'results/{self.hparams.dataset_name}/{self.hparams.exp_name}'
             os.makedirs(self.val_dir, exist_ok=True)
 
-        self.rgb_gt = []
-        self.rgb_pred = []
-
     def validation_step(self, batch, batch_nb):
-        img_id = batch_nb // VAL_BATCHES_PER_IMG
+        logs = {}
 
-        rgb_gt = batch['rgb']
-        results = self(batch, split='test')
-        #w, h = self.train_dataset.img_wh
-        #rgb_pred = rearrange(results['rgb'], '(h w) c -> 1 c h w', h=h)
-        self.rgb_pred.append(results['rgb'].cpu())
+        if self.trainer.root_gpu == 0:
+            rgb_gt = batch['rgb']
+            #batch['rgb'] = None
+            #torch.cuda.empty_cache()
+            results = self(batch, split='test')
+            g =2
+            if BATCHED_EVAL:
+                img_id = batch_nb // VAL_BATCHES_PER_IMG
+                batch_id = batch_nb % VAL_BATCHES_PER_IMG
+                if not img_id in self.rgb_gt:
+                    self.rgb_gt[img_id] = []
 
-        #rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h)
-        self.rgb_gt.append(rgb_gt.cpu())
+                self.rgb_gt[img_id].append(rgb_gt)
 
-        # logs = {}
-        # # compute each metric per image
-        #self.val_psnr(rgb_pred, rgb_gt)
-        # logs['psnr'] = self.val_psnr.compute()
-        # self.val_psnr.reset()
-        #
-        # w, h = self.train_dataset.img_wh
-        # rgb_pred = rearrange(results['rgb'], '(h w) c -> 1 c h w', h=h)
-        # rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h)
-        # self.val_ssim(rgb_pred, rgb_gt)
-        # logs['ssim'] = self.val_ssim.compute()
-        # self.val_ssim.reset()
-        # if self.hparams.eval_lpips:
-        #     self.val_lpips(torch.clip(rgb_pred*2-1, -1, 1),
-        #                    torch.clip(rgb_gt*2-1, -1, 1))
-        #     logs['lpips'] = self.val_lpips.compute()
-        #     self.val_lpips.reset()
-        #
-        # if not self.hparams.no_save_test: # save test image to disk
-        #     idx = batch['img_idxs']
-        #     rgb_pred = rearrange(results['rgb'].cpu().numpy(), '(h w) c -> h w c', h=h)
-        #     rgb_pred = (rgb_pred*255).astype(np.uint8)
-        #     depth = depth2img(rearrange(results['depth'].cpu().numpy(), '(h w) -> h w', h=h))
-        #     imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}.png'), rgb_pred)
-        #     imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}_d.png'), depth)
-        #
-        # return logs
-        return {}
+                if not img_id in self.rgb_pred:
+                    self.rgb_pred[img_id] = []
+
+                if not img_id in self.pix_ids:
+                    self.pix_ids[img_id] = []
+
+                self.rgb_pred[img_id].append(results['rgb'])
+                self.batch_ids.append(batch_id)
+                self.pix_ids[img_id].append(batch['pix_idxs'])
+            else:
+                # compute each metric per image
+                self.val_psnr(results['rgb'], rgb_gt)
+                logs['psnr'] = self.val_psnr.compute()
+                self.val_psnr.reset()
+
+                w, h = self.train_dataset.img_wh
+                rgb_pred = rearrange(results['rgb'], '(h w) c -> 1 c h w', h=h)
+                rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h)
+                self.val_ssim(rgb_pred, rgb_gt)
+                logs['ssim'] = self.val_ssim.compute()
+                self.val_ssim.reset()
+                logs['flip'] = self.flip_loss(rgb_pred, rgb_gt)
+                logs['mae'] = self.l1(rgb_pred, rgb_gt)
+                if self.hparams.eval_lpips:
+                    self.val_lpips(torch.clip(rgb_pred*2-1, -1, 1),
+                                   torch.clip(rgb_gt*2-1, -1, 1))
+                    logs['lpips'] = self.val_lpips.compute()
+                    self.val_lpips.reset()
+
+                if not self.hparams.no_save_test: # save test image to disk
+                    idx = batch['img_idxs']
+                    rgb_pred = rearrange(results['rgb'].cpu().numpy(), '(h w) c -> h w c', h=h)
+                    rgb_pred = (rgb_pred*255).astype(np.uint8)
+                    depth = depth2img(rearrange(results['depth'].cpu().numpy(), '(h w) -> h w', h=h))
+                    self.logger.log_image(key="generated_img", images=[rgb_pred])
+                    imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}.png'), rgb_pred)
+                    self.logger.log_image(key="generated_depth", images=[depth])
+                    imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}_d.png'), depth)
+
+        return logs
 
     def validation_epoch_end(self, outputs):
-        rgb_gt = torch.cat(self.rgb_gt)
-        rgb_pred = torch.cat(self.rgb_pred)
+        if self.trainer.root_gpu == 0:
+            if BATCHED_EVAL:
+                import torchvision
+                IMG_ID = 0
+                rgb_gt = torch.cat(self.rgb_gt[IMG_ID])
+                self.rgb_gt[IMG_ID].clear()
+                self.rgb_gt = {}
+                self.pix_ids = {}
+                self.batch_ids.clear()
+                #rgb_gt = all_gather_ddp_if_available(rgb_gt)
+                rgb_pred = torch.cat(self.rgb_pred[IMG_ID])
+                #rgb_pred = all_gather_ddp_if_available(rgb_pred)
+                self.rgb_pred[IMG_ID].clear()
+                self.rgb_pred = {}
+                #pix_ids = all_gather_ddp_if_available(torch.cat(self.pix_ids[IMG_ID]))
+                psnr = self.val_psnr(rgb_pred, rgb_gt)
+                self.log('test/psnr', psnr, True)
+                self.val_psnr.reset()
+                w, h = self.train_dataset.img_wh
+                rgb_pred = rearrange(rgb_pred, '(h w) c -> 1 c h w', h=h)
+                assert rgb_pred.shape[-1] == IM_W
+                rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h)
+                mean_ssim = self.val_ssim(rgb_pred, rgb_gt)
+                print('SSIM:::::::::::::: ', mean_ssim)
+                self.log('test/ssim', mean_ssim)
+                # lpipss =  self.val_lpips(torch.clip(rgb_pred*2-1, -1, 1),
+                #                    torch.clip(rgb_gt*2-1, -1, 1))
+                # self.log('test/lpips_vgg', lpipss)
 
-        psnr = self.val_psnr(rgb_pred, rgb_gt)
-        self.log('test/psnr', psnr, True)
-        self.val_psnr.reset()
-        w, h = self.train_dataset.img_wh
-        rgb_pred = rearrange(rgb_pred, '(h w) c -> 1 c h w', h=h)
-        rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h)
-        mean_ssim = self.val_ssim(rgb_pred, rgb_gt)
-        print('SSIM: ', mean_ssim)
-        self.log('test/ssim', mean_ssim)
-        # lpipss =  self.val_lpips(torch.clip(rgb_pred*2-1, -1, 1),
-        #                    torch.clip(rgb_gt*2-1, -1, 1))
-        # self.log('test/lpips_vgg', lpipss)
+                im = np.array(torchvision.transforms.ToPILImage()(rgb_pred[0, ...]))
+                #im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+                # depth = depth2img(rearrange(results['depth'].cpu().numpy(), '(h w) -> h w', h=h))
+                imageio.imsave(os.path.join(self.val_dir, f'{0:03d}.png'), im)
+                #self.logger.log_image(key="samples", images=[im])
 
-        im = np.array(torchvision.transforms.ToPILImage()(rgb_pred[0, ...]))
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-        #depth = depth2img(rearrange(results['depth'].cpu().numpy(), '(h w) -> h w', h=h))
-        imageio.imsave(os.path.join(self.val_dir, f'{0:03d}.png'), im)
-       # imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}_d.png'), depth)
+            else:
+                psnrs = torch.stack([x['psnr'] for x in outputs])
+                mean_psnr = all_gather_ddp_if_available(psnrs).mean()
+                self.log('test/psnr', mean_psnr, True)
+                print('PSNR: ', mean_psnr)
+
+                ssims = torch.stack([x['ssim'] for x in outputs])
+                mean_ssim = all_gather_ddp_if_available(ssims).mean()
+                print('SSIM:::::::::::::: ', mean_ssim)
+                self.log('test/ssim', mean_ssim)
+
+                flips = torch.stack([x['flip'] for x in outputs])
+                mean_ssim = all_gather_ddp_if_available(flips).mean()
+                self.log('test/flip', mean_ssim)
+
+                maes = torch.stack([x['mae'] for x in outputs])
+                mean_maes = all_gather_ddp_if_available(maes).mean()
+                self.log('test/mae', mean_maes)
+
+                if self.hparams.eval_lpips:
+                    lpipss = torch.stack([x['lpips'] for x in outputs])
+                    mean_lpips = all_gather_ddp_if_available(lpipss).mean()
+                    self.log('test/lpips_vgg', mean_lpips)
 
     def get_progress_bar_dict(self):
         # don't show the version number
@@ -279,27 +335,30 @@ class NeRFSystem(LightningModule):
 
 if __name__ == '__main__':
     hparams = get_opts()
-    hparams.scale = 0.5
-    hparams.scale = 2.0
+
     if hparams.val_only and (not hparams.ckpt_path):
         raise ValueError('You need to provide a @ckpt_path for validation!')
     system = NeRFSystem(hparams)
+
     ckpt_cb = ModelCheckpoint(dirpath=f'ckpts/{hparams.dataset_name}/{hparams.exp_name}',
                               filename='{epoch:d}',
-                              save_weights_only=False,
+                              save_weights_only=True,
                               every_n_epochs=1,
-                              #every_n_train_steps=10,
                               save_on_train_epoch_end=True,
                               save_top_k=-1)
     callbacks = [ckpt_cb, TQDMProgressBar(refresh_rate=1)]
 
-    logger = TensorBoardLogger(save_dir=f"logs/{hparams.dataset_name}",
-                               name=hparams.exp_name,
-                               default_hp_metric=False)
+    # logger = TensorBoardLogger(save_dir=f"logs/{hparams.dataset_name}",
+    #                            name=hparams.exp_name,
+    #                            default_hp_metric=False)
+    logger = WandbLogger(save_dir=f"logs/{hparams.dataset_name}",
+                                project =  PROJECT_NAME,
+                               name = hparams.exp_name)
+
 
     trainer = Trainer(max_epochs=hparams.num_epochs,
-                      #check_val_every_n_epoch=29,
-                      val_check_interval = 1,
+                      #val_check_interval=10, # steps
+                      check_val_every_n_epoch=1,
                       callbacks=callbacks,
                       logger=logger,
                       enable_model_summary=False,
@@ -309,11 +368,19 @@ if __name__ == '__main__':
                                if hparams.num_gpus>1 else None,
                       num_sanity_val_steps=-1 if hparams.val_only else 0,
                       precision=16)
-
-    if hparams.val_only:
-        trainer.validate(system, ckpt_path=hparams.ckpt_path)
-    else:
-        trainer.fit(system, ckpt_path=hparams.ckpt_path)
+    # trainer = Trainer(max_epochs=hparams.num_epochs,
+    #                   val_check_interval=1, # steps
+    #                   gpus=-1,
+    #                   #check_val_every_n_epoch=100,
+    #                   callbacks=callbacks,
+    #                   logger=logger,
+    #                   enable_model_summary=False,
+    #                   accelerator='ddp',
+    #                   devices=hparams.num_gpus,
+    #                   num_sanity_val_steps=-1 if hparams.val_only else 0,
+    #                   precision=16)
+    #trainer.validate(system)
+    trainer.fit(system, ckpt_path=hparams.ckpt_path)
 
     if not hparams.val_only: # save slimmed ckpt for the last epoch
         ckpt_ = \

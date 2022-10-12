@@ -3,7 +3,7 @@ from torch import nn
 import vren
 
 
-class DistortionLoss(torch.autograd.Function):
+class DistortionLoss(torch.autograd.Function): #https://github.com/sunset1995/torch_efficient_distloss
     """
     Distortion loss proposed in Mip-NeRF 360 (https://arxiv.org/pdf/2111.12077.pdf)
     Implementation is based on DVGO-v2 (https://arxiv.org/pdf/2206.05085.pdf)

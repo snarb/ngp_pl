@@ -1,6 +1,6 @@
 from torch.utils.data import Dataset
 import numpy as np
-
+from ngp_config import *
 
 class BaseDataset(Dataset):
     """
@@ -16,8 +16,14 @@ class BaseDataset(Dataset):
 
     def __len__(self):
         if self.split.startswith('train'):
-            return 1000
-        return len(self.poses)
+            return BATCHES_PER_EPOCH
+        else:
+            if BATCHED_EVAL:
+                 return len(self.poses) * VAL_BATCHES_PER_IMG
+            else:
+                return len(self.poses)
+
+
 
     def __getitem__(self, idx):
         if self.split.startswith('train'):
@@ -34,11 +40,24 @@ class BaseDataset(Dataset):
             if self.rays.shape[-1] == 4: # HDR-NeRF data
                 sample['exposure'] = rays[:, 3:]
         else:
-            sample = {'pose': self.poses[idx], 'img_idxs': idx}
-            if len(self.rays)>0: # if ground truth available
-                rays = self.rays[idx]
-                sample['rgb'] = rays[:, :3]
-                if rays.shape[1] == 4: # HDR-NeRF data
-                    sample['exposure'] = rays[0, 3] # same exposure for all rays
-
+            if not BATCHED_EVAL:
+                sample = {'pose': self.poses[idx], 'img_idxs': idx}
+                if len(self.rays)>0: # if ground truth available
+                    rays = self.rays[idx]
+                    sample['rgb'] = rays[:, :3]
+                    if rays.shape[1] == 4: # HDR-NeRF data
+                        sample['exposure'] = rays[0, 3] # same exposure for all rays
+            else:
+                img_id = idx // VAL_BATCHES_PER_IMG
+                batch_id = idx % VAL_BATCHES_PER_IMG
+                sample = {'pose': self.poses[img_id], 'img_idxs': img_id}
+                if len(self.rays)>0: # if ground truth available
+                    startRay = batch_id * VAL_BATCH_SIZE
+                    endRay = min(startRay + VAL_BATCH_SIZE, RAYS_CNT)
+                    rays = self.rays[img_id, startRay : endRay, :]
+                    sample['rgb'] = rays[:, :3]
+                    if rays.shape[1] == 4: # HDR-NeRF data
+                        sample['exposure'] = rays[0, 3] # same exposure for all rays
+                    pix_idxs = np.arange(startRay, endRay)
+                    sample['pix_idxs'] = pix_idxs
         return sample

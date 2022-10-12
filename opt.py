@@ -1,4 +1,5 @@
 import argparse
+from ngp_config import *
 
 def get_opts():
     parser = argparse.ArgumentParser()
@@ -37,9 +38,9 @@ def get_opts():
                         all_images: uniformly from all pixels of ALL images
                         same_image: uniformly from all pixels of a SAME image
                         ''')
-    parser.add_argument('--num_epochs', type=int, default=30,
+    parser.add_argument('--num_epochs', type=int, default=29,
                         help='number of training epochs')
-    parser.add_argument('--num_gpus', type=int, default=1,
+    parser.add_argument('--num_gpus', type=int, default=GPU_CNT,
                         help='number of gpus')
     parser.add_argument('--lr', type=float, default=1e-2,
                         help='learning rate')

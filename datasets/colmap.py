@@ -3,6 +3,7 @@ import numpy as np
 import os
 import glob
 from tqdm import tqdm
+from ngp_config import  *
 
 from .ray_utils import *
 from .color_utils import read_image
@@ -88,9 +89,9 @@ class ColmapDataset(BaseDataset):
         super().__init__(root_dir, split, downsample)
 
         self.read_intrinsics()
-        from nerf_load_llff import load_llff_data
-        images, poses, bds, render_poses, i_test = load_llff_data(root_dir, factor = None, bd_factor = 1.)
-        poses, bds = _load_data(root_dir, load_imgs = False) # Remove
+        #from nerf_load_llff import load_llff_data
+        #images, poses, bds, render_poses, i_test = load_llff_data(root_dir, factor = None, bd_factor = 1.)
+        #poses, bds = _load_data(root_dir, load_imgs = False) # Remove
         if kwargs.get('read_meta', True):
             self.read_meta(split, **kwargs)
 
@@ -100,6 +101,8 @@ class ColmapDataset(BaseDataset):
         h = int(camdata[1].height*self.downsample)
         w = int(camdata[1].width*self.downsample)
         self.img_wh = (w, h)
+        assert w == IM_W
+        assert h == IM_H
 
         if camdata[1].model == 'SIMPLE_RADIAL':
             fx = fy = camdata[1].params[0]*self.downsample
@@ -190,11 +193,11 @@ class ColmapDataset(BaseDataset):
         else:
             # use every 8th image as test set
             if split=='train':
-                img_paths = [x for i, x in enumerate(img_paths) if i%8!=0]
-                self.poses = np.array([x for i, x in enumerate(self.poses) if i%8!=0])
+                img_paths = [x for i, x in enumerate(img_paths) if i!=TEST_VIEW_ID]
+                self.poses = np.array([x for i, x in enumerate(self.poses) if i!=TEST_VIEW_ID])
             elif split=='test':
-                img_paths = [x for i, x in enumerate(img_paths) if i%8==0]
-                self.poses = np.array([x for i, x in enumerate(self.poses) if i%8==0])
+                img_paths = [x for i, x in enumerate(img_paths) if i==TEST_VIEW_ID]
+                self.poses = np.array([x for i, x in enumerate(self.poses) if i==TEST_VIEW_ID])
 
         print(f'Loading {len(img_paths)} {split} images ...')
         for img_path in tqdm(img_paths):

@@ -5,6 +5,7 @@ import glob
 from tqdm import tqdm
 import pathlib
 import cv2
+from ngp_config import *
 
 from .ray_utils import *
 from .color_utils import read_image
@@ -13,6 +14,7 @@ from .colmap_utils import \
 
 from .base import BaseDataset
 
+BD_FACTOR = 0.75
 
 class NerfMpyDataset(BaseDataset):
     def __init__(self, root_dir, split='train', downsample=1.0, **kwargs):
@@ -21,7 +23,7 @@ class NerfMpyDataset(BaseDataset):
         poses = poses_arr[:, :-2].reshape([-1, 3, 5])#.transpose([1, 2, 0])
         intr = poses[..., -1]
         bds = poses_arr[:, -2:].transpose([1, 0])
-        self.downsample = 0.5
+        #self.downsample = 0.5
 
         self.read_intrinsics(intr)
         if kwargs.get('read_meta', True):
@@ -32,6 +34,8 @@ class NerfMpyDataset(BaseDataset):
         #camdata = read_cameras_binary(os.path.join(self.root_dir, 'sparse/0/cameras.bin'))
         h = int(intr[0, 0] * self.downsample)
         w = int(intr[0, 1] * self.downsample)
+        assert w == IM_W
+        assert h == IM_H
         self.img_wh = (w, h)
 
         focal_length = intr[0, 2] * self.downsample
@@ -57,8 +61,12 @@ class NerfMpyDataset(BaseDataset):
 
         self.poses = center_poses(poses, None)
 
-        scale = np.linalg.norm(self.poses[..., 3], axis=-1).min()
-        self.poses[..., 3] /= scale
+
+        sc = 1. if BD_FACTOR is None else 1. / (bd_inp.min() * BD_FACTOR)
+        self.poses[:, :3, 3] *= sc
+
+        #scale = np.linalg.norm(self.poses[..., 3], axis=-1).min()
+        #self.poses[..., 3] /= scale
         #self.pts3d /= scale
 
         self.rays = []
@@ -69,11 +77,11 @@ class NerfMpyDataset(BaseDataset):
 
         # use  10th image as test set
         if split == 'train':
-            img_paths = [x for i, x in enumerate(img_paths) if i != 0]
-            self.poses = np.array([x for i, x in enumerate(self.poses) if i != 10])
+            img_paths = [x for i, x in enumerate(img_paths) if i != 6]
+            self.poses = np.array([x for i, x in enumerate(self.poses) if i != 6])
         elif split == 'test':
-            img_paths = [x for i, x in enumerate(img_paths) if i == 0]
-            self.poses = np.array([x for i, x in enumerate(self.poses) if i == 10])
+            img_paths = [x for i, x in enumerate(img_paths) if i == 6]
+            self.poses = np.array([x for i, x in enumerate(self.poses) if i == 6])
 
         print(f'Loading {len(img_paths)} {split} images ...')
 
