@@ -35,7 +35,7 @@ class NGP(nn.Module):
 
         self.xyz_encoder = \
             tcnn.NetworkWithInputEncoding(
-                n_input_dims=3, n_output_dims=16,
+                n_input_dims=4, n_output_dims=16,
                 encoding_config={
                     "otype": "Grid",
 	                "type": "Hash",
@@ -91,7 +91,7 @@ class NGP(nn.Module):
                     )
                 setattr(self, f'tonemapper_net_{i}', tonemapper_net)
 
-    def density(self, x, return_feat=False):
+    def density(self, x, f, return_feat=False):
         """
         Inputs:
             x: (N, 3) xyz in [-scale, scale]
@@ -101,6 +101,8 @@ class NGP(nn.Module):
             sigmas: (N)
         """
         x = (x-self.xyz_min)/(self.xyz_max-self.xyz_min)
+        frames_tensor = torch.ones_like(x[:, 0]) * f
+        x = torch.cat([x, frames_tensor[:, None]], axis=1)
         h = self.xyz_encoder(x)
         sigmas = TruncExp.apply(h[:, 0])
         if return_feat: return sigmas, h
@@ -129,7 +131,7 @@ class NGP(nn.Module):
         rgbs = torch.cat(out, 1)
         return rgbs
 
-    def forward(self, x, d, **kwargs):
+    def forward(self, x, d, frames, **kwargs):
         """
         Inputs:
             x: (N, 3) xyz in [-scale, scale]
@@ -139,7 +141,7 @@ class NGP(nn.Module):
             sigmas: (N)
             rgbs: (N, 3)
         """
-        sigmas, h = self.density(x, return_feat=True)
+        sigmas, h = self.density(x, frames, return_feat=True)
         d = d/torch.norm(d, dim=1, keepdim=True)
         d = self.dir_encoder((d+1)/2)
         rgbs = self.rgb_net(torch.cat([d, h], 1))
@@ -238,7 +240,7 @@ class NGP(nn.Module):
                     torch.where(valid_mask, 0., -1.)
 
     @torch.no_grad()
-    def update_density_grid(self, density_threshold, warmup=False, decay=0.95, erode=False):
+    def update_density_grid(self, frames, density_threshold, warmup=False, decay=0.95, erode=False):
         density_grid_tmp = torch.zeros_like(self.density_grid)
         if warmup: # during the first steps
             cells = self.get_all_cells()
@@ -253,7 +255,7 @@ class NGP(nn.Module):
             xyzs_w = (coords/(self.grid_size-1)*2-1)*(s-half_grid_size)
             # pick random position in the cell by adding noise in [-hgs, hgs]
             xyzs_w += (torch.rand_like(xyzs_w)*2-1) * half_grid_size
-            density_grid_tmp[c, indices] = self.density(xyzs_w)
+            density_grid_tmp[c, indices] = self.density(xyzs_w, frames)
 
         if erode:
             # My own logic. decay more the cells that are visible to few cameras

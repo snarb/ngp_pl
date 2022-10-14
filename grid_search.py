@@ -12,7 +12,7 @@ for cur_scale in [34]:
             print("DL: ", str(dl))
             p = subprocess.Popen(
                 "/home/ubuntu/anaconda3/envs/ngp_pl2/bin/python3 /home/ubuntu/repos/ngp_pl/train_orig.py --root_dir /home/ubuntu/repos/instant-ngp-flame/ "
-                "--dataset_name colmap --exp_name scales_no_find_dl   --num_gpus 1  --num_epochs 5 --downsample 0.5 --batch_size 10000 --distortion_loss_w  " + str(dl)  + ' '#--optimize_ext   --random_bg  
+                "--dataset_name colmap --exp_name scales_no_find_dl_ft   --num_gpus 1  --num_epochs 6 --downsample 0.5 --batch_size 10000 --distortion_loss_w  " + str(dl)  + ' '#--optimize_ext   --random_bg  
                 "--lr 1e-2 --scale " + str(cur_scale), shell=True)
             (output, err) = p.communicate()
 

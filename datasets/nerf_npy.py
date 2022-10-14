@@ -89,6 +89,7 @@ class NerfMpyDataset(BaseDataset):
             buf = [] # buffer for ray attributes: rgb, etc
             cap = cv2.VideoCapture(str(img_path))
             flag, frame = cap.read()
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame = frame.astype(np.float32)/255.0
             frame = cv2.resize(frame, self.img_wh)
             frame = rearrange(frame, 'h w c -> (h w) c')

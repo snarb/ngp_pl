@@ -115,7 +115,7 @@ class NeRFSystem(LightningModule):
         if self.hparams.use_exposure:
             kwargs['exposure'] = batch['exposure']
 
-        return render(self.model, rays_o, rays_d, **kwargs)
+        return render(self.model, rays_o, rays_d, batch['frames'], **kwargs)
 
     def setup(self, stage):
         dataset = dataset_dict[self.hparams.dataset_name]
@@ -176,7 +176,8 @@ class NeRFSystem(LightningModule):
 
     def training_step(self, batch, batch_nb, *args):
         if self.global_step%self.update_interval == 0:
-            self.model.update_density_grid(0.01*MAX_SAMPLES/3**0.5,
+            self.model.update_density_grid(batch['frames'],
+                                           0.01*MAX_SAMPLES/3**0.5,
                                            warmup=self.global_step<self.warmup_steps,
                                            erode=self.hparams.dataset_name=='colmap')
 
