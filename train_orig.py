@@ -69,8 +69,7 @@ class NeRFSystem(LightningModule):
         self.flip_loss = HDRFLIPLoss()
         self.warmup_steps = 256
         self.warmup_steps = 999999999999999999999999999999999999999999
-
-        self.update_interval = 16
+        self.update_interval = DENSITY_GRID_UPDATE_INTERVAL
 
         self.loss = NeRFLoss(lambda_distortion=self.hparams.distortion_loss_w)
         self.train_psnr = PeakSignalNoiseRatio(data_range=1)
@@ -89,6 +88,7 @@ class NeRFSystem(LightningModule):
             torch.zeros(self.model.cascades, G**3))
         self.model.register_buffer('grid_coords',
             create_meshgrid3d(G, G, G, False, dtype=torch.int32).reshape(-1, 3))
+        g = 2
 
     def forward(self, batch, split):
         if split=='train':
@@ -158,9 +158,11 @@ class NeRFSystem(LightningModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
+                          shuffle=True,
                           num_workers=WORKERS_CNT,
                           persistent_workers=WORKERS_CNT > 0,
                           batch_size=None,
+                          #drop_last=True,
                           pin_memory=True)
 
     def val_dataloader(self):

@@ -30,5 +30,6 @@ for img_path in img_paths:
     if not os.path.exists(ATEN_FOLDER):
         os.mkdir(ATEN_FOLDER)
     fname = os.path.basename(img_path).split('.')[0]
-    cv2.imwrite(os.path.join(ATEN_FOLDER, fname + '.png'), std)
+    np.save(os.path.join(ATEN_FOLDER, fname), std.astype(np.float16))
+    #cv2.imwrite(os.path.join(ATEN_FOLDER, fname + '.png'), std)
     g = 2

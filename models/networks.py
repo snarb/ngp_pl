@@ -101,8 +101,7 @@ class NGP(nn.Module):
             sigmas: (N)
         """
         x = (x-self.xyz_min)/(self.xyz_max-self.xyz_min)
-        frames_tensor = torch.ones_like(x[:, 0]) * f
-        x = torch.cat([x, frames_tensor[:, None]], axis=1)
+        x = torch.cat([x, f[:, None]], axis=1)
         h = self.xyz_encoder(x)
         sigmas = TruncExp.apply(h[:, 0])
         if return_feat: return sigmas, h
@@ -255,7 +254,8 @@ class NGP(nn.Module):
             xyzs_w = (coords/(self.grid_size-1)*2-1)*(s-half_grid_size)
             # pick random position in the cell by adding noise in [-hgs, hgs]
             xyzs_w += (torch.rand_like(xyzs_w)*2-1) * half_grid_size
-            density_grid_tmp[c, indices] = self.density(xyzs_w, frames)
+            frames_tensor = torch.ones_like(xyzs_w[:, 0]) * 0 # Use frame zero for decity grid modelling
+            density_grid_tmp[c, indices] = self.density(xyzs_w, frames_tensor)
 
         if erode:
             # My own logic. decay more the cells that are visible to few cameras
