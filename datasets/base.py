@@ -27,7 +27,7 @@ class BaseDataset(Dataset):
 
     def __len__(self):
         if self.split.startswith('train'):
-            return self.pix_ids.shape[1] // self.batch_size
+            return MAX_FRAME * LOOPS_PER_EPOCHS
         else:
             if BATCHED_EVAL:
                  return len(self.poses) * VAL_BATCHES_PER_IMG
@@ -40,22 +40,30 @@ class BaseDataset(Dataset):
         if self.split.startswith('train'):
             #if random.random() < FRAME_CHANGE_PROB:
             if self.sample_id >= BATCHES_FOR_RELOAD:
+                print('Reloading dataset....................................')
                 self.read_meta(self.split)
                 self.sample_id = 0
             else:
                 self.sample_id += 1
 
-            start_index = idx * self.batch_size
+            frame_id = idx % MAX_FRAME
+            #start_index = idx * self.batch_size
             #adjusted_batch_size = self.batch_size // self.poses
             # training pose is retrieved in train.py
-            img_idxs = self.img_ids[:, start_index: (start_index + self.batch_size)]
+            #img_idxs = self.img_ids[:, start_index: (start_index + self.Fbatch_size)]
             #  select pixels
-            pix_idxs = self.pix_ids[:, start_index: (start_index + self.batch_size)]
-            rays = self.rays[:, start_index: (start_index + self.batch_size)]
-            frames = self.frames_to_use[:, start_index: (start_index + self.batch_size)]
+            img_idxs = np.random.choice(len(self.poses), self.batch_size)
+            ray_ids = np.random.choice(SAMPLE_RAYS_PER_FRAME, self.batch_size)
+            rays = self.rays[frame_id, img_idxs, ray_ids, :]
+            pix_ids = self.pix_ids[frame_id, img_idxs, ray_ids]
+            frame_to_use_formated = (frame_id - MIN_FRAME) / MAX_FRAME
 
-            sample = {'img_idxs': torch.flatten(img_idxs), 'pix_idxs': torch.flatten(pix_idxs),
-                      'rgb': rays.reshape((-1, 3)), 'frames' : torch.flatten(frames)}
+            # pix_idxs = self.pix_ids[:, start_index: (start_index + self.batch_size)]
+            # rays = self.rays[:, start_index: (start_index + self.batch_size)]
+            # frames = self.frames_to_use[:, start_index: (start_index + self.batch_size)]
+
+            sample = {'img_idxs': torch.tensor(img_idxs), 'pix_idxs': torch.flatten(pix_ids),
+                      'rgb': rays.reshape((-1, 3)), 'frames' : frame_to_use_formated}
             # if self.rays.shape[-1] == 4: # HDR-NeRF data
             #     sample['exposure'] = rays[:, 3:]
 
@@ -63,10 +71,10 @@ class BaseDataset(Dataset):
             #.sample_id += 1
         else:
             if not BATCHED_EVAL:
-                sample = {'pose': self.poses[idx], 'img_idxs': idx, 'frames' : [self.frame_to_use] *  self.rays[idx].shape[0]}
+                sample = {'pose': self.poses[idx], 'img_idxs': idx, 'frames' : [self.frames_to_use] *  self.rays[idx].shape[0]}
                 if len(self.rays)>0: # if ground truth available
                     rays = self.rays[idx]
-                    sample['rgb'] = rays[:, :3]
+                    sample['rgb'] = rays[:, :,  :3]
                     if rays.shape[1] == 4: # HDR-NeRF data
                         sample['exposure'] = rays[0, 3] # same exposure for all rays
             else:

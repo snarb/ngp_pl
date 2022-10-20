@@ -180,73 +180,89 @@ class ColmapDataset(BaseDataset):
         print(f'Loading {len(img_paths)} {split} images ...')
         #frame_to_use = random.randint(MIN_FRAME, MAX_FRAME)
         #frame_to_use = 0
-        img_id = 0
-        for img_path in tqdm(img_paths):
-            fname = os.path.basename(img_path).split('.')[0].zfill(2)
-            vid_name = 'cam' + fname + '.mp4'
-            vid_path = os.path.join(VID_DIR, vid_name)
-            aten_map = np.load(os.path.join(ATEN_FOLDER, 'cam' + fname + '.npy')).astype(np.float32)
-            aten_map /= aten_map.sum()
-            aten_map = aten_map.flatten()
-            rays_per_camera = []
-            pix_ids_per_camera = []
-            frames_to_use = []
-            for frame_to_use in range(MIN_FRAME, MAX_FRAME):
-                t_dir = os.path.join(TEMP_DIR, str(frame_to_use))
-                t_path = os.path.join(t_dir, fname)  + '.jpg'
-                if not os.path.exists(t_dir):
-                    os.mkdir(t_dir)
+        frames_to_use = []
+        if split == 'train':
+            for frame_to_use in tqdm(range(MIN_FRAME, MAX_FRAME)):
+                img_id = 0
+                rays_per_camera = []
+                pix_ids_per_camera = []
 
-                if not os.path.exists(t_path):
-                    cap = cv2.VideoCapture(str(vid_path)) # 30.0 fps 300 frames count = 10 sec
-                    cap.set(1, frame_to_use)
-                    flag, frame = cap.read()
-                    frame = cv2.resize(frame, self.img_wh)
-                    cv2.imwrite(t_path, frame)
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                else:
-                    frame = np.array(Image.open(t_path))
+                for img_path in img_paths:
+                    fname = os.path.basename(img_path).split('.')[0].zfill(2)
+                    vid_name = 'cam' + fname + '.mp4'
+                    vid_path = os.path.join(VID_DIR, vid_name)
+                    aten_map = np.load(os.path.join(ATEN_FOLDER, 'cam' + fname + '.npy')).astype(np.float32)
+                    aten_map /= aten_map.sum()
+                    aten_map = aten_map.flatten()
+                    t_dir = os.path.join(TEMP_DIR, str(frame_to_use))
+                    t_path = os.path.join(t_dir, fname)  + '.jpg'
+                    if not os.path.exists(t_dir):
+                        os.mkdir(t_dir)
 
-                frame_to_use = (frame_to_use - MIN_FRAME) / MAX_FRAME
-                frame = rearrange(frame, 'h w c -> (h w) c')
-                if random.random() < UNIFORM_SMPL_PROB:
-                    pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME)
-                else:
-                    pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME, p=aten_map)
-                rays = frame[pix_idxs]
-                rays = rays.astype(np.float16) / 255.0
-                #img = frame.astype(np.float16) / 255.0
-                #img = imageio.imread(img_path).astype(np.float32)/255.0
+                    if not os.path.exists(t_path):
+                        cap = cv2.VideoCapture(str(vid_path)) # 30.0 fps 300 frames count = 10 sec
+                        cap.set(1, frame_to_use)
+                        flag, frame = cap.read()
+                        frame = cv2.resize(frame, self.img_wh)
+                        cv2.imwrite(t_path, frame)
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    else:
+                        frame = np.array(Image.open(t_path))
 
-                #img = read_image(img_path, self.img_wh, blend_a=False)
-                #rays = torch.FloatTensor(rays)
-                #img = torch.ShortTensor(img)
-                #img = torch.ByteTensor(img)
-                #buf += [img]
+                    frame_to_use_formated = (frame_to_use - MIN_FRAME) / MAX_FRAME
+                    frame = rearrange(frame, 'h w c -> (h w) c')
+                    if random.random() < UNIFORM_SMPL_PROB:
+                        pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME)
+                    else:
+                        pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME, p=aten_map)
+                    rays = frame[pix_idxs]
+                    rays = rays.astype(np.float16) / 255.0
+                    #img = frame.astype(np.float16) / 255.0
+                    #img = imageio.imread(img_path).astype(np.float32)/255.0
 
-                rays_per_camera.append(rays)
-                pix_ids_per_camera.append(pix_idxs)
-                frames_to_use.extend([frame_to_use] * len(pix_idxs))
+                    #img = read_image(img_path, self.img_wh, blend_a=False)
+                    #rays = torch.FloatTensor(rays)
+                    #img = torch.ShortTensor(img)
+                    #img = torch.ByteTensor(img)
+                    #buf += [img]
 
-            #self.rays += torch.tensor(rays_per_camera)
-            rays_per_camera = rearrange(rays_per_camera, 'f r c -> (f r) c')
-            self.rays.append(rays_per_camera)
-            self.pix_ids.append(rearrange(pix_ids_per_camera, 'f p -> (f p)'))
-            self.img_ids.append(torch.tensor([img_id] * len(rays_per_camera)))
-            self.frames_to_use.append(torch.tensor(frames_to_use))
+                    #rays_per_camera.append(rays)
+                    #pix_ids_per_camera.append(pix_idxs)
+                    #frames_to_use.extend([frame_to_use] * len(pix_idxs))
 
-            img_id += 1
+                    #self.rays += torch.tensor(rays_per_camera)
+                    #rays_per_camera = rearrange(rays_per_camera, 'f r c -> (f r) c')
+                    self.rays.append(rays)
+                    self.pix_ids.append(pix_idxs)
+                    self.img_ids.append(img_id)
+                    img_id += 1
+            #self.frames_to_use.append(frame_to_use_formated)
 
-        self.rays = torch.tensor(self.rays) # (N_images, hw, ?)
-        self.pix_ids = torch.tensor(self.pix_ids)
-        self.img_ids = torch.stack(self.img_ids)
-        self.frames_to_use = torch.stack(self.frames_to_use)
+
+            self.rays = torch.tensor(self.rays).reshape((MAX_FRAME, len(img_paths), -1,  3)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAME, 3)
+            self.pix_ids = torch.tensor(self.pix_ids).reshape((MAX_FRAME, len(img_paths), -1)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAM)
+            self.img_ids = torch.tensor(self.img_ids)
+        #self.frames_to_use = torch.stack(self.frames_to_use)
 
         # indexes = torch.randperm(self.pix_ids.shape[1])
         # self.rays = self.rays[:, indexes, :]
         # self.pix_ids = self.pix_ids[:, indexes]
         # self.img_ids = self.img_ids[:, indexes]
         # self.frames_to_use = self.frames_to_use[:, indexes]
+
+        if split == 'test':
+            frame_to_use = 0
+            for img_path in img_paths:
+                fname = os.path.basename(img_path).split('.')[0].zfill(2)
+                t_dir = os.path.join(TEMP_DIR, str(frame_to_use))
+                t_path = os.path.join(t_dir, fname) + '.jpg'
+                frame = np.array(Image.open(t_path))
+                rays = frame
+                rays = rays.astype(np.float16) / 255.0
+                self.rays = torch.tensor(rays).reshape((1, 1, -1,  3)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAME, 3)
+                #self.pix_ids = torch.tensor(self.pix_ids).reshape((MAX_FRAME, len(img_paths), -1)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAM)
+                self.img_ids = 0
+                self.frames_to_use = 0
 
         self.poses = torch.FloatTensor(self.poses) # (N_images, 3, 4)
         end = timer()

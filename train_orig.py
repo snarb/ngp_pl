@@ -215,7 +215,7 @@ class NeRFSystem(LightningModule):
         logs = {}
 
         if self.trainer.root_gpu == 0:
-            rgb_gt = batch['rgb']
+            rgb_gt = batch['rgb'][0, ...]
             #batch['rgb'] = None
             #torch.cuda.empty_cache()
             results = self(batch, split='test')
@@ -245,7 +245,7 @@ class NeRFSystem(LightningModule):
 
                 w, h = self.train_dataset.img_wh
                 rgb_pred = rearrange(results['rgb'], '(h w) c -> 1 c h w', h=h)
-                rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h)
+                rgb_gt = rearrange(rgb_gt, '(h w) c -> 1 c h w', h=h).float()
                 self.val_ssim(rgb_pred, rgb_gt)
                 logs['ssim'] = self.val_ssim.compute()
                 self.val_ssim.reset()
@@ -361,6 +361,7 @@ if __name__ == '__main__':
 
     trainer = Trainer(max_epochs=hparams.num_epochs,
                       #val_check_interval=10, # steps
+                      accumulate_grad_batches=ACCUM_BATCHES,
                       check_val_every_n_epoch=1,
                       callbacks=callbacks,
                       logger=logger,
