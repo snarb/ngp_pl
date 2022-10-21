@@ -1,10 +1,12 @@
-import torch
-torch.manual_seed(0)
+
 import numpy as np
 np.random.seed(0)
 from torch import nn
 from opt import get_opts
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import torch
+torch.manual_seed(0)
 import glob
 import imageio
 import numpy as np
@@ -13,7 +15,9 @@ from einops import rearrange
 from ngp_config import *
 from flip_loss import HDRFLIPLoss
 from torchmetrics import MeanAbsoluteError
+# --lr 3e-5
 # --optimize_ext
+#--weight_path /home/ubuntu/repos/ngp_pl/ckpts/colmap/vid_train/epoch=29_slim.ckpt
 # --root_dir /home/ubuntu/repos/vid_ds/flame/ --dataset_name colmap --exp_name flame   --num_gpus 1  --num_epochs 40 --downsample 0.5 --scale 2.0 --batch_size 6000  --lr 1e-6
 #--root_dir /home/ubuntu/repos/instant-ngp-flame/ --dataset_name colmap --exp_name flame   --num_gpus 1  --num_epochs 40 --downsample 0.5 --scale 2.0 --batch_size 6000  --lr 1e-6
 # data
@@ -67,8 +71,9 @@ class NeRFSystem(LightningModule):
         self.rgb_gt = {}
         self.pix_ids = {}
         self.flip_loss = HDRFLIPLoss()
-        self.warmup_steps = 256
+        #self.warmup_steps = 256
         self.warmup_steps = 999999999999999999999999999999999999999999
+        #self.warmup_steps = 5
         self.update_interval = DENSITY_GRID_UPDATE_INTERVAL
 
         self.loss = NeRFLoss(lambda_distortion=self.hparams.distortion_loss_w)
@@ -160,14 +165,14 @@ class NeRFSystem(LightningModule):
         return DataLoader(self.train_dataset,
                           shuffle=True,
                           num_workers=WORKERS_CNT,
-                          persistent_workers=WORKERS_CNT > 0,
+                          #persistent_workers=WORKERS_CNT > 0,
                           batch_size=None,
                           #drop_last=True,
                           pin_memory=True)
 
     def val_dataloader(self):
         return DataLoader(self.test_dataset,
-                          num_workers=WORKERS_CNT,
+                          num_workers=0,
                           batch_size=None,
                           pin_memory=True)
 
@@ -213,8 +218,10 @@ class NeRFSystem(LightningModule):
 
     def validation_step(self, batch, batch_nb):
         logs = {}
-
-        if self.trainer.root_gpu == 0:
+        #print('666666666666666666666')
+        #print(self.trainer.root_gpu)
+        if self.trainer.root_gpu > - 999999999999:
+            #print('GPU 0:')
             rgb_gt = batch['rgb'][0, ...]
             #batch['rgb'] = None
             #torch.cuda.empty_cache()
@@ -262,15 +269,22 @@ class NeRFSystem(LightningModule):
                     rgb_pred = rearrange(results['rgb'].cpu().numpy(), '(h w) c -> h w c', h=h)
                     rgb_pred = (rgb_pred*255).astype(np.uint8)
                     depth = depth2img(rearrange(results['depth'].cpu().numpy(), '(h w) -> h w', h=h))
-                    self.logger.log_image(key="generated_img", images=[rgb_pred])
-                    imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}.png'), rgb_pred)
-                    self.logger.log_image(key="generated_depth", images=[depth])
+                    rank = os.environ.get('LOCAL_RANK')
+                    if rank is not None:
+                        nodeId = int(rank)
+                    else:
+                        nodeId = 0
+                    nodeId = str(nodeId)
+                    kn = "new_generated_img_" + str(nodeId)
+                    self.logger.log_image(key=kn, images=[rgb_pred])
+                    imageio.imsave(os.path.join(self.val_dir, str(idx) + nodeId + '.png'), rgb_pred)
+                    self.logger.log_image(key="new_generated_depth_" + nodeId, images=[depth])
                     imageio.imsave(os.path.join(self.val_dir, f'{idx:03d}_d.png'), depth)
 
         return logs
 
     def validation_epoch_end(self, outputs):
-        if self.trainer.root_gpu == 0:
+        if self.trainer.root_gpu > -19999999999999:
             if BATCHED_EVAL:
                 import torchvision
                 IMG_ID = 0
@@ -360,6 +374,7 @@ if __name__ == '__main__':
 
 
     trainer = Trainer(max_epochs=hparams.num_epochs,
+                      replace_sampler_ddp=False,
                       #val_check_interval=10, # steps
                       accumulate_grad_batches=ACCUM_BATCHES,
                       check_val_every_n_epoch=1,
@@ -367,9 +382,10 @@ if __name__ == '__main__':
                       logger=logger,
                       enable_model_summary=False,
                       accelerator='gpu',
-                      devices=hparams.num_gpus,
-                      strategy=DDPPlugin(find_unused_parameters=False)
-                               if hparams.num_gpus>1 else None,
+                      devices=1,
+                      #devices=hparams.num_gpus,
+                     # devices=[0],
+                      #strategy='ddp_find_unused_parameters_false',
                       num_sanity_val_steps=-1 if hparams.val_only else 0,
                       precision=16)
     # trainer = Trainer(max_epochs=hparams.num_epochs,

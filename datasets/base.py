@@ -27,7 +27,7 @@ class BaseDataset(Dataset):
 
     def __len__(self):
         if self.split.startswith('train'):
-            return MAX_FRAME * LOOPS_PER_EPOCHS
+            return MAX_FRAME * BATCHES_PER_EPOCH
         else:
             if BATCHED_EVAL:
                  return len(self.poses) * VAL_BATCHES_PER_IMG
@@ -38,11 +38,12 @@ class BaseDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.split.startswith('train'):
+            #print(self.sample_id)
             #if random.random() < FRAME_CHANGE_PROB:
             if self.sample_id >= BATCHES_FOR_RELOAD:
+                self.sample_id = 0
                 print('Reloading dataset....................................')
                 self.read_meta(self.split)
-                self.sample_id = 0
             else:
                 self.sample_id += 1
 

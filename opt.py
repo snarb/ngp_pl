@@ -40,7 +40,7 @@ def get_opts():
                         ''')
     parser.add_argument('--num_epochs', type=int, default=29,
                         help='number of training epochs')
-    parser.add_argument('--num_gpus', type=int, default=GPU_CNT,
+    parser.add_argument('--num_gpus', type=int, default=1,
                         help='number of gpus')
     parser.add_argument('--lr', type=float, default=1e-2,
                         help='learning rate')

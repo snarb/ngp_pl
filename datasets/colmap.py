@@ -251,7 +251,13 @@ class ColmapDataset(BaseDataset):
         # self.frames_to_use = self.frames_to_use[:, indexes]
 
         if split == 'test':
-            frame_to_use = 0
+            rank = os.environ.get('LOCAL_RANK')
+            if rank is not None:
+                nodeId = int(rank)
+            else:
+                nodeId = 0
+            frame_to_use = nodeId * 5
+            frame_to_use_formated = (frame_to_use - MIN_FRAME) / MAX_FRAME
             for img_path in img_paths:
                 fname = os.path.basename(img_path).split('.')[0].zfill(2)
                 t_dir = os.path.join(TEMP_DIR, str(frame_to_use))
@@ -262,7 +268,7 @@ class ColmapDataset(BaseDataset):
                 self.rays = torch.tensor(rays).reshape((1, 1, -1,  3)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAME, 3)
                 #self.pix_ids = torch.tensor(self.pix_ids).reshape((MAX_FRAME, len(img_paths), -1)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAM)
                 self.img_ids = 0
-                self.frames_to_use = 0
+            self.frames_to_use = frame_to_use_formated
 
         self.poses = torch.FloatTensor(self.poses) # (N_images, 3, 4)
         end = timer()
