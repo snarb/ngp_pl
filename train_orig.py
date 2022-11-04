@@ -1,12 +1,12 @@
 
 import numpy as np
-np.random.seed(0)
+#np.random.seed(0)
 from torch import nn
 from opt import get_opts
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
-torch.manual_seed(0)
+#torch.manual_seed(0)
 import glob
 import imageio
 import numpy as np
@@ -15,6 +15,7 @@ from einops import rearrange
 from ngp_config import *
 from flip_loss import HDRFLIPLoss
 from torchmetrics import MeanAbsoluteError
+from pytorch_lightning.callbacks import LearningRateMonitor
 # --lr 3e-5
 # --optimize_ext
 #--weight_path /home/ubuntu/repos/ngp_pl/ckpts/colmap/vid_train/epoch=29_slim.ckpt
@@ -159,7 +160,8 @@ class NeRFSystem(LightningModule):
                                     self.hparams.num_epochs,
                                     self.hparams.lr/30)
 
-        return opts, [net_sch]
+        #return opts, [net_sch]
+        return opts
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
@@ -363,7 +365,9 @@ if __name__ == '__main__':
                               every_n_epochs=1,
                               save_on_train_epoch_end=True,
                               save_top_k=-1)
-    callbacks = [ckpt_cb, TQDMProgressBar(refresh_rate=1)]
+
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    callbacks = [ckpt_cb, TQDMProgressBar(refresh_rate=1), lr_monitor]
 
     # logger = TensorBoardLogger(save_dir=f"logs/{hparams.dataset_name}",
     #                            name=hparams.exp_name,
@@ -374,7 +378,7 @@ if __name__ == '__main__':
 
 
     trainer = Trainer(max_epochs=hparams.num_epochs,
-                      replace_sampler_ddp=False,
+                      #replace_sampler_ddp=False,
                       #val_check_interval=10, # steps
                       accumulate_grad_batches=ACCUM_BATCHES,
                       check_val_every_n_epoch=1,
@@ -382,9 +386,9 @@ if __name__ == '__main__':
                       logger=logger,
                       enable_model_summary=False,
                       accelerator='gpu',
-                      devices=1,
+                      #devices=1,
                       #devices=hparams.num_gpus,
-                     # devices=[0],
+                      devices=[int(hparams.num_gpus)],
                       #strategy='ddp_find_unused_parameters_false',
                       num_sanity_val_steps=-1 if hparams.val_only else 0,
                       precision=16)

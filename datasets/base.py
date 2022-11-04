@@ -4,6 +4,7 @@ import numpy as np
 from ngp_config import *
 import torch
 
+
 class BaseDataset(Dataset):
     """
     Define length and sampling method
@@ -40,12 +41,12 @@ class BaseDataset(Dataset):
         if self.split.startswith('train'):
             #print(self.sample_id)
             #if random.random() < FRAME_CHANGE_PROB:
-            if self.sample_id >= BATCHES_FOR_RELOAD:
-                self.sample_id = 0
-                print('Reloading dataset....................................')
-                self.read_meta(self.split)
-            else:
-                self.sample_id += 1
+            # if self.sample_id >= BATCHES_FOR_RELOAD:
+            #     self.sample_id = 0
+            #     print('Reloading dataset....................................')
+            #     self.read_meta(self.split)
+            # else:
+            #     self.sample_id += 1
 
             frame_id = idx % MAX_FRAME
             #start_index = idx * self.batch_size
@@ -54,16 +55,20 @@ class BaseDataset(Dataset):
             #img_idxs = self.img_ids[:, start_index: (start_index + self.Fbatch_size)]
             #  select pixels
             img_idxs = np.random.choice(len(self.poses), self.batch_size)
-            ray_ids = np.random.choice(SAMPLE_RAYS_PER_FRAME, self.batch_size)
-            rays = self.rays[frame_id, img_idxs, ray_ids, :]
-            pix_ids = self.pix_ids[frame_id, img_idxs, ray_ids]
+            # ray_ids = np.random.choice(SAMPLE_RAYS_PER_FRAME, self.batch_size)
+            # rays = self.rays[frame_id, img_idxs, ray_ids, :]
+            # pix_ids = self.pix_ids[frame_id, img_idxs, ray_ids]
+            pix_ids = np.random.choice(RAYS_CNT, self.batch_size)
+            rays = self.rays[frame_id, img_idxs, pix_ids, :]
+            rays = rays.to(dtype=torch.float16).div(255.)
+
             frame_to_use_formated = (frame_id - MIN_FRAME) / MAX_FRAME
 
             # pix_idxs = self.pix_ids[:, start_index: (start_index + self.batch_size)]
             # rays = self.rays[:, start_index: (start_index + self.batch_size)]
             # frames = self.frames_to_use[:, start_index: (start_index + self.batch_size)]
 
-            sample = {'img_idxs': torch.tensor(img_idxs), 'pix_idxs': torch.flatten(pix_ids),
+            sample = {'img_idxs': torch.tensor(img_idxs), 'pix_idxs': torch.tensor(pix_ids),
                       'rgb': rays.reshape((-1, 3)), 'frames' : frame_to_use_formated}
             # if self.rays.shape[-1] == 4: # HDR-NeRF data
             #     sample['exposure'] = rays[:, 3:]

@@ -180,7 +180,8 @@ class ColmapDataset(BaseDataset):
         print(f'Loading {len(img_paths)} {split} images ...')
         #frame_to_use = random.randint(MIN_FRAME, MAX_FRAME)
         #frame_to_use = 0
-        frames_to_use = []
+        #frames_to_use = []
+        self.rays = torch.zeros((MAX_FRAME, len(img_paths), RAYS_CNT,  3), dtype = torch.uint8)
         if split == 'train':
             for frame_to_use in tqdm(range(MIN_FRAME, MAX_FRAME)):
                 img_id = 0
@@ -211,12 +212,17 @@ class ColmapDataset(BaseDataset):
 
                     frame_to_use_formated = (frame_to_use - MIN_FRAME) / MAX_FRAME
                     frame = rearrange(frame, 'h w c -> (h w) c')
-                    if random.random() < UNIFORM_SMPL_PROB:
-                        pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME)
-                    else:
-                        pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME, p=aten_map)
-                    rays = frame[pix_idxs]
-                    rays = rays.astype(np.float16) / 255.0
+                    # #----------
+                    # if random.random() < UNIFORM_SMPL_PROB:
+                    #     pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME)
+                    # else:
+                    #     pix_idxs = np.random.choice(RAYS_CNT, SAMPLE_RAYS_PER_FRAME, p=aten_map)
+                    # rays = frame[pix_idxs]
+                    # rays = rays.astype(np.float16) / 255.0
+                    # #-------------------
+                    self.rays[frame_to_use, img_id, ...] = torch.tensor(frame)
+                    #rays = frame
+
                     #img = frame.astype(np.float16) / 255.0
                     #img = imageio.imread(img_path).astype(np.float32)/255.0
 
@@ -232,16 +238,16 @@ class ColmapDataset(BaseDataset):
 
                     #self.rays += torch.tensor(rays_per_camera)
                     #rays_per_camera = rearrange(rays_per_camera, 'f r c -> (f r) c')
-                    self.rays.append(rays)
-                    self.pix_ids.append(pix_idxs)
-                    self.img_ids.append(img_id)
+                    #self.rays.append(rays)
+                    #self.pix_ids.append(pix_idxs)
+                    #self.img_ids.append(img_id)
                     img_id += 1
             #self.frames_to_use.append(frame_to_use_formated)
 
 
-            self.rays = torch.tensor(self.rays).reshape((MAX_FRAME, len(img_paths), -1,  3)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAME, 3)
-            self.pix_ids = torch.tensor(self.pix_ids).reshape((MAX_FRAME, len(img_paths), -1)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAM)
-            self.img_ids = torch.tensor(self.img_ids)
+            # self.rays = torch.tensor(self.rays).reshape((MAX_FRAME, len(img_paths), -1,  3)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAME, 3)
+            # self.pix_ids = torch.tensor(self.pix_ids).reshape((MAX_FRAME, len(img_paths), -1)) # (frame_id, n_images, SAMPLE_RAYS_PER_FRAM)
+            # self.img_ids = torch.tensor(self.img_ids)
         #self.frames_to_use = torch.stack(self.frames_to_use)
 
         # indexes = torch.randperm(self.pix_ids.shape[1])
